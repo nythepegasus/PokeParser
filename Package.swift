@@ -10,12 +10,18 @@ let package = Package(
         .library(
             name: "PokeParser",
             targets: ["PokeParser"]),
+        .executable(
+            name: "PokeCLI",
+            targets: ["PokeCLI"]),
     ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
         // Targets can depend on other targets in this package and products from dependencies.
         .target(
             name: "PokeParser"),
+        .executableTarget(
+            name: "PokeCLI",
+        	dependencies: ["PokeParser"]),
         .testTarget(
             name: "PokeParserTests",
             dependencies: ["PokeParser"]),

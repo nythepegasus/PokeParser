@@ -53,11 +53,39 @@ public protocol Gen3SaveSectionData {
 public protocol Gen3Section: Gen3SaveSectionData {}
 
 public extension Gen3Section {
-    var checksum: Int16 {
-        return _data.subdata(in: 0xFF6..<0xFF6+2).int16
+    func calcChecksum() -> UInt16 {
+        var chk: UInt32 = 0
+        let amount: Int
+        switch self {
+        case is Gen3Trainer:
+            amount = 3884
+        case is Gen3TeamItem, is Gen3GameState, is Gen3Misc, is Gen3PCBuffer:
+            amount = section == 13 ? 2000 : 3968
+        case is Gen3RivalInfo:
+            amount = 3948
+        default:
+            amount = 3968
+            print("Not implemented yet..")
+        }
+        var offset = 0
+        while offset <= amount {
+            let word = _data.subdata(in: offset..<offset+4).uint32
+
+            chk &+= word
+            offset += 4
+        }
+        let result = ((chk >> 16) & 0xFFFF) &+ (chk & 0xFFFF)
+
+        return UInt16(result & 0xFFFF)
     }
-    var section: Int16 {
-        return _data.subdata(in: 0xFF4..<0xFF4+2).int16
+
+    var checksum: UInt16 {
+        get {
+            return _data.subdata(in: 0xFF6..<0xFF6+2).uint16
+        }
+    }
+    var section: UInt16 {
+        return _data.subdata(in: 0xFF4..<0xFF4+2).uint16
     }
     var signature: Int32 {
         return _data.subdata(in: 0xFF8..<0xFF8+4).int32
@@ -250,6 +278,66 @@ public struct Gen3Slot: Equatable {
 
     public static func ==(lhs: Gen3Slot, rhs: Gen3Slot) -> Bool {
         return lhs.trainer.save_index == rhs.trainer.save_index
+    }
+
+    public func checkChecksum() -> Bool {
+        guard trainer.checksum == trainer.calcChecksum() else {
+            print("trainer failed :(")
+            return false
+        }
+        guard rival.checksum == rival.calcChecksum() else {
+            print("rival failed :(")
+            return false
+        }
+        guard game_state.checksum == game_state.calcChecksum() else {
+            print("game state failed :(")
+            return false
+        }
+        guard team_items.checksum == team_items.calcChecksum() else {
+            print("team items failed :(")
+            return false
+        }
+        guard misc.checksum == misc.calcChecksum() else {
+            print("misc failed :(")
+            return false
+        }
+        guard pcbuffer_a.checksum == pcbuffer_a.calcChecksum() else {
+            print("pcbuffera failed :(")
+            return false
+        }
+        guard pcbuffer_b.checksum == pcbuffer_b.calcChecksum() else {
+            print("pcbufferb failed :(")
+            return false
+        }
+        guard pcbuffer_c.checksum == pcbuffer_c.calcChecksum() else {
+            print("pcbufferc failed :(")
+            return false
+        }
+        guard pcbuffer_d.checksum == pcbuffer_d.calcChecksum() else {
+            print("pcbufferd failed :(")
+            return false
+        }
+        guard pcbuffer_e.checksum == pcbuffer_e.calcChecksum() else {
+            print("pcbuffere failed :(")
+            return false
+        }
+        guard pcbuffer_f.checksum == pcbuffer_f.calcChecksum() else {
+            print("pcbufferf failed :(")
+            return false
+        }
+        guard pcbuffer_g.checksum == pcbuffer_g.calcChecksum() else {
+            print("pcbufferg failed :(")
+            return false
+        }
+        guard pcbuffer_h.checksum == pcbuffer_h.calcChecksum() else {
+            print("pcbufferh failed :(")
+            return false
+        }
+        guard pcbuffer_i.checksum == pcbuffer_i.calcChecksum() else {
+            print("pcbufferi failed :(")
+            return false
+        }
+		return true
     }
 }
 
