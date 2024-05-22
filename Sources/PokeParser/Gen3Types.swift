@@ -7,8 +7,8 @@
 
 import Foundation
 
-public protocol Gen3String {
-    var data: Data { get set }
+public struct Gen3String {
+    var data: Data
 }
 
 public extension Gen3String {
@@ -57,7 +57,7 @@ public protocol Gen3Section {
     var data: Data { get set }
 }
 
-extension Data: Gen3Section, Gen3String {
+extension Data: Gen3Section {
     public var data: Data {
         get {
             self
@@ -104,7 +104,7 @@ public extension Gen3Section {
     }
 
     func toUInt8Array() -> [UInt8] {
-        data.uint8array
+        data.toUInt8Array()
     }
 
     var checksum: UInt16 {
@@ -157,7 +157,7 @@ public struct Gen3Trainer: Gen3Section {
 
     public var name: Gen3String {
         get {
-            self.subdata(in: 0..<7)
+            Gen3String(data: self.subdata(in: 0..<7))
         }
     }
 
