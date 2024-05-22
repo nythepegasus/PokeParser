@@ -13,47 +13,82 @@ public struct Gen3String {
 
 public extension Gen3String {
     var string: String {
-        return decode_string(data)
+        return Self.decode_string(data)
     }
 
     var uint8array: [UInt8] {
         return data.toUInt8Array()
     }
-
-    func decode_string(_ s: [UInt8]) -> String {
+    
+    static func decoded_char(_ byte: UInt8) -> Character {
         let chars = "0123456789!?.-         ,  ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-        return String(s.map { byte in byte - 161 < chars.count ? chars[chars.index(chars.startIndex, offsetBy: Int(byte - 161))] : "\0"})
-    }
-
-    func decode_string(_ s: Data) -> String {
-        return decode_string(s.toUInt8Array())
-    }
-
-    func encode_string(_ s: String) -> Data {
-        let chars = "0123456789!?.-         ,  ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-        return Data([UInt8](s.map { return chars.firstIndex(of: $0) == nil ? UInt8(0xFF) : UInt8(chars.distance(from: chars.startIndex, to: chars.firstIndex(of: $0)!)) + 161 }))
-    }
-}
-
-extension Int {
-    func off(_ val: Int) -> Range<Int> {
-        return off(val as Int?)
-    }
-
-    func off(_ val: Int? = nil) -> Range<Int> {
-        if let val = val {
-            return self..<self+val
+        if byte > 161 {
+            return byte - 161 < chars.count ? chars[chars.index(chars.startIndex, offsetBy: Int(byte - 161))] : "\0"
         } else {
-            return self..<self+self
+            return "\0"
         }
     }
 
-    var chunk: Range<Int> {
-        return self..<self+4096
+    static func decode_string(_ s: [UInt8]) -> String {
+        return String(s.map { byte in Self.decoded_char(byte) })
+    }
+
+    static func decode_string(_ s: Data) -> String {
+        return Self.decode_string(s.toUInt8Array())
+    }
+    
+    static func encoded_char(_ c: Character) -> UInt8 {
+        let chars = "0123456789!?.-         ,  ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+        guard chars.firstIndex(of: c) != nil else { return UInt8(0xFF) }
+        return UInt8(chars.distance(from: chars.startIndex, to: chars.firstIndex(of: c)!)) + 161
+    }
+
+    static func encode_string(_ s: String) -> Data {
+        return Data([UInt8](s.map { Self.encoded_char($0) }))
     }
 }
 
-public protocol Gen3Section {
+fileprivate typealias Byte = UInt8
+fileprivate typealias Word = UInt16
+fileprivate typealias FullWord = UInt32
+
+fileprivate extension Int {
+    func off(_ val: Int) -> Range<Int> {
+        return self..<self+val
+    }
+
+    var byte: Range<Int> {
+        return self.off(1)
+    }
+
+    var word: Range<Int> {
+        return self.off(2)
+    }
+
+    var fullword: Range<Int> {
+        return self.off(4)
+    }
+
+    var name: Range<Int> {
+        return self.off(7)
+    }
+    
+    static var chunkSize: Int { 0x1000 }
+
+    var chunk: Range<Int> {
+        return self.off(.chunkSize)
+    }
+    
+    static var slotSize: Int { 0xE000 }
+
+    var slot: Range<Int> {
+        self.off(.slotSize)
+    }
+
+    static var saveSize: Int { 0x20000 }
+}
+
+public protocol Gen3Section: Hashable {
     var data: Data { get set }
 }
 
@@ -68,11 +103,55 @@ extension Data: Gen3Section {
     }
 }
 
-fileprivate func checkSectionData(_ data: Data, id section: Int) {
-    guard data.section == section else { fatalError("Unexpected section \(data.section) when expecting \(section)") }
+fileprivate extension Data {
+    var uint8: Byte { withUnsafeBytes({ $0.load(as: UInt8.self) }) }
+    var uint16: Word { withUnsafeBytes({ $0.load(as: UInt16.self) }) }
+    var uint32: FullWord { withUnsafeBytes({ $0.load(as: UInt32.self) }) }
+
+    func toUInt8Array() -> [Byte] {
+        var arr = [UInt8](repeating: 0, count: count)
+        copyBytes(to: &arr, count: count)
+        return arr
+    }
+
+    func byte(_ i: Int) -> Byte {
+        self.subdata(in: i.byte).uint8
+    }
+
+    func word(_ i: Int) -> Word {
+        self.subdata(in: i.word).uint16
+    }
+
+    func fullword(_ i: Int) -> FullWord {
+        self.subdata(in: i.fullword).uint32
+    }
+    
+    func name(_ i: Int) -> Data {
+        self.subdata(in: i.name)
+    }
+
+    func chunk(_ i: Int) -> Data {
+        self.subdata(in: i.chunk)
+    }
+
+    func slot(_ i: Int) -> Data {
+        self.subdata(in: i.slot)
+    }
 }
 
 public extension Gen3Section {
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(data)
+    }
+}
+
+public extension Gen3Section {
+
+    fileprivate static func checkSectionData(_ data: Data, id section: Int) {
+        guard data.count == .chunkSize, // Ensure we're actually reading a chunk of a save
+              data.section == section else { fatalError("Unexpected section \(data.section) when expecting \(section)") }
+    }
+
     func calcChecksum() -> UInt16 {
         var chk: UInt32 = 0
         let amount: Int
@@ -88,19 +167,10 @@ public extension Gen3Section {
             print("Not implemented yet..")
         }
         var offset = 0
-        while offset <= amount {
-            let word = self.subdata(in: offset.off(4)).uint32
-
-            chk &+= word
-            offset += 4
-        }
+        while offset <= amount { chk &+= data.fullword(offset); offset += 4 }
         let result = ((chk >> 16) & 0xFFFF) &+ (chk & 0xFFFF)
 
         return UInt16(result & 0xFFFF)
-    }
-
-    func subdata(in range: Range<Data.Index>) -> Data {
-        data.subdata(in: range)
     }
 
     func toUInt8Array() -> [UInt8] {
@@ -109,23 +179,23 @@ public extension Gen3Section {
 
     var checksum: UInt16 {
         get {
-            data.subdata(in: 0xFF6.off(2)).uint16
+            data.word(0xFF6)
         }
         set {
-            data[0xFF6.off(2)] = Swift.withUnsafeBytes(of: newValue) { Data($0) }
+            data[0xFF6.word] = Swift.withUnsafeBytes(of: newValue) { Data($0) }
         }
     }
 
     var section: UInt16 {
-        data.subdata(in: 0xFF4.off(2)).uint16
+        data.word(0xFF4)
     }
 
-    var signature: Int32 {
-        data.subdata(in: 0xFF8.off(4)).int32
+    var signature: UInt32 {
+        data.fullword(0xFF8)
     }
 
-    var save_index: Int32 {
-        data.subdata(in: 0xFFC.off(4)).int32
+    var save_index: UInt32 {
+        data.fullword(0xFFC)
     }
 }
 
@@ -134,7 +204,7 @@ public struct Gen3Trainer: Gen3Section {
     public var data: Data
 
     init(_ d: Data) {
-        checkSectionData(d, id: 0)
+        Gen3Trainer.checkSectionData(d, id: 0)
         self.data = d
     }
 
@@ -157,13 +227,12 @@ public struct Gen3Trainer: Gen3Section {
 
     public var name: Gen3String {
         get {
-            Gen3String(data: self.subdata(in: 0..<7))
+            Gen3String(data: data.name(0))
         }
     }
 
     public var game_code: Gen3SaveType {
-        let code = self.subdata(in: 0xAC.off(4)).uint32
-        switch code {
+        switch data.fullword(0xAC) {
         case 0:
             return .rs
         case 1:
@@ -176,7 +245,7 @@ public struct Gen3Trainer: Gen3Section {
 
     public var gender: TrainerGender {
         get {
-            switch self.subdata(in: 8..<9).uint8 {
+            switch data.byte(8) {
             case 0:
                 return .male
             case 1:
@@ -189,11 +258,11 @@ public struct Gen3Trainer: Gen3Section {
             var t = self.toUInt8Array()
             switch newValue {
             case .male:
-                t[8..<9] = [0]
+                t[8.byte] = [0]
             case .female:
-                t[8..<9] = [1]
+                t[8.byte] = [1]
             case .unknown:
-                t[8..<9] = [2]
+                t[8.byte] = [2]
             }
             data = Data(t)
         }
@@ -201,22 +270,22 @@ public struct Gen3Trainer: Gen3Section {
 
     public var public_id: TrainerID {
         get {
-            self.subdata(in: 0xA.off(2)).uint16
+            data.word(0xA)
         }
         set {
             var t = self.toUInt8Array()
-            t[0xA.off(2)] = [UInt8(newValue & 0x00FF), UInt8(newValue >> 8)]
+            t[0xA.word] = [UInt8(newValue & 0x00FF), UInt8(newValue >> 8)]
             data = Data(t)
         }
     }
 
     public var secret_id: TrainerID {
         get {
-            self.subdata(in: 0xC.off(2)).uint16
+            data.word(0xC)
         }
         set {
             var t = self.toUInt8Array()
-            t[0xC.off(2)] = [UInt8(newValue & 0xFF00), UInt8(newValue >> 4)]
+            t[0xC.word] = [UInt8(newValue & 0xFF00), UInt8(newValue >> 4)]
             data = Data(t)
             // TODO: lmao, methinks i'm doing this wrong
         }
@@ -233,7 +302,7 @@ public struct Gen3TeamItem: Gen3Section {
     public var data: Data
 
     init(_ d: Data) {
-        checkSectionData(d, id: 1)
+        Gen3TeamItem.checkSectionData(d, id: 1)
         data = d
     }
 }
@@ -242,7 +311,7 @@ public struct Gen3GameState: Gen3Section {
     public var data: Data
 
     init(_ d: Data) {
-        checkSectionData(d, id: 2)
+        Gen3GameState.checkSectionData(d, id: 2)
         data = d
     }
 }
@@ -251,7 +320,7 @@ public struct Gen3Misc: Gen3Section {
     public var data: Data
 
     init(_ d: Data) {
-        checkSectionData(d, id: 3)
+        Gen3Misc.checkSectionData(d, id: 3)
         data = d
     }
 }
@@ -260,7 +329,7 @@ public struct Gen3RivalInfo: Gen3Section {
     public var data: Data
 
     init(_ d: Data) {
-        checkSectionData(d, id: 4)
+        Gen3RivalInfo.checkSectionData(d, id: 4)
         data = d
     }
 }
@@ -281,116 +350,77 @@ public struct Gen3Generic: Gen3Section {
 }
 
 extension [Gen3Section] {
-    func joined() -> Data {
-        return self.reduce(Data()) { $0 + $1.data }
-    }
+    func joined() -> Data { self.reduce(Data()) { $0 + $1.data } }
 }
 
-public struct Gen3Slot: Equatable {
+public struct Gen3Slot: Equatable, Hashable {
     public var trainer: Gen3Trainer
     public var team_items: Gen3TeamItem
     public var state: Gen3GameState
     public var misc: Gen3Misc
     public var rival: Gen3RivalInfo
-    public var pcbuffer_a: Gen3PCBuffer
-    public var pcbuffer_b: Gen3PCBuffer
-    public var pcbuffer_c: Gen3PCBuffer
-    public var pcbuffer_d: Gen3PCBuffer
-    public var pcbuffer_e: Gen3PCBuffer
-    public var pcbuffer_f: Gen3PCBuffer
-    public var pcbuffer_g: Gen3PCBuffer
-    public var pcbuffer_h: Gen3PCBuffer
-    public var pcbuffer_i: Gen3PCBuffer
+    private var pcbuffer_a: Gen3PCBuffer
+    private var pcbuffer_b: Gen3PCBuffer
+    private var pcbuffer_c: Gen3PCBuffer
+    private var pcbuffer_d: Gen3PCBuffer
+    private var pcbuffer_e: Gen3PCBuffer
+    private var pcbuffer_f: Gen3PCBuffer
+    private var pcbuffer_g: Gen3PCBuffer
+    private var pcbuffer_h: Gen3PCBuffer
+    private var pcbuffer_i: Gen3PCBuffer
+    
+    public var pcbuffer: Data {
+        [
+            pcbuffer_a, pcbuffer_b, pcbuffer_c, pcbuffer_d, pcbuffer_e,
+         	pcbuffer_f, pcbuffer_g, pcbuffer_h, pcbuffer_i
+        ].joined()
+    }
+
+    public var sections: [any Gen3Section] {
+        [
+            trainer, team_items, state, misc, rival, pcbuffer_a,
+        	pcbuffer_b, pcbuffer_c, pcbuffer_d, pcbuffer_e,
+            pcbuffer_f, pcbuffer_g, pcbuffer_h, pcbuffer_i
+        ]
+    }
 
     init(data: Data) {
         // Swift won't let me init each of the below out of order so I have to fix the shuffle before parsing
-        let nd = (0..<14)
-            .map({ Gen3Generic(data: data.subdata(in: ($0*4096).chunk))})
+        let d = (0..<14)
+            .map({ Gen3Generic(data: data.chunk($0 * .chunkSize)) })
             .sorted(by: { $0.section < $1.section })
             .joined()
 
-        trainer =     Gen3Trainer(nd.subdata(in: 0x0000.chunk))
-        team_items = Gen3TeamItem(nd.subdata(in: 0x1000.chunk))
-        state =     Gen3GameState(nd.subdata(in: 0x2000.chunk))
-        misc =           Gen3Misc(nd.subdata(in: 0x3000.chunk))
-        rival =     Gen3RivalInfo(nd.subdata(in: 0x4000.chunk))
-        pcbuffer_a = Gen3PCBuffer(nd.subdata(in: 0x5000.chunk))
-        pcbuffer_b = Gen3PCBuffer(nd.subdata(in: 0x6000.chunk))
-        pcbuffer_c = Gen3PCBuffer(nd.subdata(in: 0x7000.chunk))
-        pcbuffer_d = Gen3PCBuffer(nd.subdata(in: 0x8000.chunk))
-        pcbuffer_e = Gen3PCBuffer(nd.subdata(in: 0x9000.chunk))
-        pcbuffer_f = Gen3PCBuffer(nd.subdata(in: 0xA000.chunk))
-        pcbuffer_g = Gen3PCBuffer(nd.subdata(in: 0xB000.chunk))
-        pcbuffer_h = Gen3PCBuffer(nd.subdata(in: 0xC000.chunk))
-        pcbuffer_i = Gen3PCBuffer(nd.subdata(in: 0xD000.chunk))
+        trainer =     Gen3Trainer(d.chunk(.chunkSize*0x0))
+        team_items = Gen3TeamItem(d.chunk(.chunkSize*0x1))
+        state =     Gen3GameState(d.chunk(.chunkSize*0x2))
+        misc =           Gen3Misc(d.chunk(.chunkSize*0x3))
+        rival =     Gen3RivalInfo(d.chunk(.chunkSize*0x4))
+        pcbuffer_a = Gen3PCBuffer(d.chunk(.chunkSize*0x5))
+        pcbuffer_b = Gen3PCBuffer(d.chunk(.chunkSize*0x6))
+        pcbuffer_c = Gen3PCBuffer(d.chunk(.chunkSize*0x7))
+        pcbuffer_d = Gen3PCBuffer(d.chunk(.chunkSize*0x8))
+        pcbuffer_e = Gen3PCBuffer(d.chunk(.chunkSize*0x9))
+        pcbuffer_f = Gen3PCBuffer(d.chunk(.chunkSize*0xA))
+        pcbuffer_g = Gen3PCBuffer(d.chunk(.chunkSize*0xB))
+        pcbuffer_h = Gen3PCBuffer(d.chunk(.chunkSize*0xC))
+        pcbuffer_i = Gen3PCBuffer(d.chunk(.chunkSize*0xD))
     }
     
-    public var save_index: Int32 {
+    public var save_index: UInt32 {
         return trainer.save_index
     }
 
     public static func ==(lhs: Gen3Slot, rhs: Gen3Slot) -> Bool {
         return lhs.trainer.save_index == rhs.trainer.save_index
     }
+    
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(trainer.save_index)
+    }
 
     public func checkChecksum() -> Bool {
-        guard trainer.checksum == trainer.calcChecksum() else {
-            print("trainer failed :(")
-            return false
-        }
-        guard rival.checksum == rival.calcChecksum() else {
-            print("rival failed :(")
-            return false
-        }
-        guard state.checksum == state.calcChecksum() else {
-            print("game state failed :(")
-            return false
-        }
-        guard team_items.checksum == team_items.calcChecksum() else {
-            print("team items failed :(")
-            return false
-        }
-        guard misc.checksum == misc.calcChecksum() else {
-            print("misc failed :(")
-            return false
-        }
-        guard pcbuffer_a.checksum == pcbuffer_a.calcChecksum() else {
-            print("pcbuffera failed :(")
-            return false
-        }
-        guard pcbuffer_b.checksum == pcbuffer_b.calcChecksum() else {
-            print("pcbufferb failed :(")
-            return false
-        }
-        guard pcbuffer_c.checksum == pcbuffer_c.calcChecksum() else {
-            print("pcbufferc failed :(")
-            return false
-        }
-        guard pcbuffer_d.checksum == pcbuffer_d.calcChecksum() else {
-            print("pcbufferd failed :(")
-            return false
-        }
-        guard pcbuffer_e.checksum == pcbuffer_e.calcChecksum() else {
-            print("pcbuffere failed :(")
-            return false
-        }
-        guard pcbuffer_f.checksum == pcbuffer_f.calcChecksum() else {
-            print("pcbufferf failed :(")
-            return false
-        }
-        guard pcbuffer_g.checksum == pcbuffer_g.calcChecksum() else {
-            print("pcbufferg failed :(")
-            return false
-        }
-        guard pcbuffer_h.checksum == pcbuffer_h.calcChecksum() else {
-            print("pcbufferh failed :(")
-            return false
-        }
-        guard pcbuffer_i.checksum == pcbuffer_i.calcChecksum() else {
-            print("pcbufferi failed :(")
-            return false
-        }
-		return true
+        return sections.allSatisfy{ $0.checksum == $0.calcChecksum() }
     }
 }
 
@@ -417,6 +447,8 @@ public struct Gen3Save {
     public var ereader: Gen3eReader
     public var battle: Gen3Battle
     public var rtc: Gen3RTC?
+    
+    public var slots: [Gen3Slot] { [slot, slot_backup] }
 
     public var trainer: Gen3Trainer {
         get {
@@ -432,28 +464,17 @@ public struct Gen3Save {
     }
 
     public func checkChecksum() -> Bool {
-        // TODO: Actually verify that the Hall of Fame/etc data actually have checksums
-//        guard hof.checksum == hof.calcChecksum() else {
-//            print("Hall of fame failed :(")
-//            return false
-//        }
-        guard slot.checkChecksum() else {
-            return false
-        }
-        guard slot_backup.checkChecksum() else {
-            return false
-        }
-        return true
+        return slots.allSatisfy { $0.checkChecksum() }
     }
 
     public init(data: Data) {
-        slot = Gen3Slot(data: data.subdata(in: 0.off(0xE000)))
-        slot_backup = Gen3Slot(data: data.subdata(in: 0xE000.off()))
+        slot = Gen3Slot(data: data.slot(0))
+        slot_backup = Gen3Slot(data: data.slot(.slotSize))
         // Rearrange the slots to be the most current first, then the backup.
         if slot.trainer.save_index < slot_backup.trainer.save_index { (slot_backup, slot) = (slot, slot_backup) }
-        hof = Gen3HOF(data: data.subdata(in: 0x1C000.chunk))
-        ereader = Gen3eReader(data: data.subdata(in: 0x1E000.chunk))
-        battle = Gen3Battle(data: data.subdata(in: 0x1F000.chunk))
-        if data.count > 0x20000 { rtc = Gen3RTC(data: data.subdata(in: 0x20000..<data.count)) }
+        hof = Gen3HOF(data: data.chunk((.slotSize * 2) + .chunkSize))
+        ereader = Gen3eReader(data: data.chunk((.slotSize * 2) + (.chunkSize * 2)))
+        battle = Gen3Battle(data: data.chunk((.slotSize * 2) + (.chunkSize * 3)))
+        if data.count > .saveSize { rtc = Gen3RTC(data: data.subdata(in: .saveSize..<data.count)) }
     }
 }
